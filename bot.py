@@ -7,7 +7,9 @@ import threading
 import time
 from dateutil.relativedelta import relativedelta
 
-bot = telebot.TeleBot('6222852548:AAGkFKtoKUw0svkNH5AKMEYiVmnxrj24zFg')
+from config import bot_token
+
+bot = telebot.TeleBot(bot_token)
 
 users = {}  # словарь для хранения данных пользователей
 
@@ -134,7 +136,7 @@ def send_files(msg):
 
 def process_add_files_step(msg):
     if msg.content_type == 'document':
-        users[msg.chat.id].editable.files += [(msg.document.file_name, msg.document.file_id)]
+        users[msg.chat.id].editable.files += [msg.document.file_id]
         bot.send_message(msg.chat.id, f'File {msg.document.file_name} attached!')
         msg = bot.send_message(msg.chat.id, 'Attach one more file or press /cancel:')
         bot.register_next_step_handler(msg, process_add_files_step)
@@ -216,8 +218,8 @@ def current_reminders(msg):
             markup.add(types.InlineKeyboardButton('Delete next only', callback_data=f'delete_next_{i}'))
 
         bot.send_message(msg.chat.id, f'{i + 1}. ' + rem.to_string(), reply_markup=markup)
-        for _, file_id in rem.files:
-            bot.send_document(msg.chat.id, file_id)
+        for file in rem.files:
+            bot.send_document(msg.chat.id, file)
 
     start(msg)
 
@@ -230,8 +232,8 @@ def edit_reminder(call):
 
     bot.send_message(chat_id, 'Reminder to edit:')
     bot.send_message(chat_id, rem.to_string())
-    for _, file_id in rem.files:
-        bot.send_document(chat_id, file_id)
+    for file in rem.files:
+        bot.send_document(chat_id, file)
 
     markup = types.ReplyKeyboardMarkup(row_width=2)
     markup.add(
@@ -252,10 +254,10 @@ def process_edit_step(msg):
     elif msg.text == 'Change date':
         enter_date(msg)
     elif msg.text == 'Change files':
-        for file_name, file_id in rem.files:
+        for file in rem.files:
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton('Delete', callback_data=f'delete_file_{file_name}'))
-            bot.send_document(chat_id, file_id, reply_markup=markup)
+            markup.add(types.InlineKeyboardButton('Delete', callback_data=f'delete_file_{file}'))
+            bot.send_document(chat_id, file, reply_markup=markup)
         send_files(msg)
     elif msg.text == 'Change repeat period':
         enter_repeatable(msg)
@@ -265,7 +267,7 @@ def process_edit_step(msg):
 def delete_file(call):
     data = call.data.split('_')
     rem = users[call.message.chat.id].editable
-    rem.files = [(name, file_id) for name, file_id in rem.files if name != data[2]]
+    rem.files = [file for file in rem.files if file != data[2]]
     bot.answer_callback_query(call.id, text=f'File {data[2]} deleted!')
     start(call.message)
 
@@ -290,10 +292,18 @@ def delete_reminder(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('done_'))
 def done_reminder(call):
     user = users[call.message.chat.id]
-    user.editable = user.current.pop(int(call.data.split('_')[1]))
+    rem = user.editable = user.current.pop(int(call.data.split('_')[1]))
     edit_to_done(call.message.chat.id)
+    next_to_curr(call.message.chat.id, rem)
     bot.answer_callback_query(call.id, text='Reminder done!')
     start(call.message)
+
+
+def next_to_curr(chat_id, rem):
+    user = users[chat_id]
+    user.editable = copy.deepcopy(rem)
+    user.editable += rem.delta
+    edit_to_curr(chat_id)
 
 
 @bot.message_handler(func=lambda msg: msg.text == 'Completed deals')
@@ -322,27 +332,28 @@ def undone_reminder(call):
 
 
 def check_reminders():
+    for chat_id, user in users.items():
+        for i, rem in enumerate(user.current):
+            if rem.date == datetime.now().replace(second=0, microsecond=0):
+                markup = types.InlineKeyboardMarkup()
+                markup.add(
+                    types.InlineKeyboardButton('Edit', callback_data=f'edit_{i}'),
+                    types.InlineKeyboardButton('Done', callback_data=f'done_{i}')
+                )
+                bot.send_message(chat_id, f'Reminder: {rem.text}', reply_markup=markup)
+                for file in rem.files:
+                    bot.send_document(chat_id, file)
+                if rem.delta != relativedelta():
+                    next_to_curr(chat_id, rem)
+
+
+def inf_checker():
     while True:
-        for chat_id, user in users.items():
-            for i, rem in enumerate(user.current):
-                if rem.date == datetime.now().replace(second=0, microsecond=0):
-                    markup = types.InlineKeyboardMarkup()
-                    markup.add(
-                        types.InlineKeyboardButton('Edit', callback_data=f'edit_{i}'),
-                        types.InlineKeyboardButton('Done', callback_data=f'done_{i}')
-                    )
-
-                    bot.send_message(chat_id, f'Reminder: {rem.text}', reply_markup=markup)
-                    for _, file_id in rem.files:
-                        bot.send_document(chat_id, file_id)
-
-                    if rem.delta != relativedelta():
-                        user.editable = copy.deepcopy(rem)
-                        user.editable += rem.delta
-                        edit_to_curr(chat_id)
+        check_reminders()
         time.sleep(60)
 
 
+
 if __name__ == '__main__':
-    threading.Thread(target=check_reminders).start()
+    threading.Thread(target=inf_checker).start()
     bot.polling()  # запускаем бота
