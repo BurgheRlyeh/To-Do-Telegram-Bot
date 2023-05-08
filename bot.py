@@ -1,10 +1,13 @@
+import copy
+
 import telebot
 from telebot import types
-import datetime
+from datetime import datetime, timedelta
 import threading
 import time
+from dateutil import relativedelta
 
-bot = telebot.TeleBot('')  # замените YOUR_TOKEN_HERE на токен вашего бота
+bot = telebot.TeleBot('')
 
 users = {}  # словарь для хранения данных пользователей
 
@@ -13,271 +16,317 @@ class Reminder:
     def __init__(self):
         self.text = ''  # текст напоминания
         self.date = None  # дата напоминания
+        self.edit = True
         self.files = []  # список прикрепленных файлов
         self.done = False  # флаг выполнения напоминания
-        self.repeat = False  # флаг повторяющегося напоминания
+        self.delta = None  # флаг повторяющегося напоминания
+
+    def to_string(self):
+        return f'{self.text} ({self.date.strftime("%Y-%m-%d %H:%M")}' + \
+               (f', every {list(freqs.keys())[list(freqs.values()).index(self.delta)]})' if self.delta else ')')
 
 
-def start(message):
-    chat_id = message.chat.id
+freqs = {
+    'Day': relativedelta.relativedelta(days=1),
+    'Week': relativedelta.relativedelta(weeks=1),
+    'Month': relativedelta.relativedelta(months=1),
+    'Year': relativedelta.relativedelta(years=1)
+}
+
+
+def start(msg):
+    chat_id = msg.chat.id
     if chat_id not in users:
-        users[chat_id] = []  # создаем пустой список напоминаний для нового пользователя
-    markup = types.ReplyKeyboardMarkup(row_width=1)  # создаем клавиатуру с выбором действий
+        users[chat_id] = []
+    markup = types.ReplyKeyboardMarkup(row_width=1)
     markup.add(
-        types.KeyboardButton('Создать напоминание'),
-        types.KeyboardButton('Текущие дела'),
-        types.KeyboardButton('Выполненные дела')
+        types.KeyboardButton('Create a reminder'),
+        types.KeyboardButton('Current deals'),
+        types.KeyboardButton('Completed deals')
     )
-    bot.send_message(chat_id, "Выберите действие:", reply_markup=markup)
+    bot.send_message(chat_id, "Choose an action:", reply_markup=markup)
 
 
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=['start', 'cancel'])
 def send_welcome(message):
-    start(message)  # выводим клавиатуру с выбором действий при старте бота
+    start(message)
 
 
-@bot.message_handler(commands=['cancel'])
-def cancel(message):
-    start(message)  # выводим клавиатуру с выбором действий при отмене
+@bot.message_handler(func=lambda msg: msg.text == 'Create a reminder')
+def create_reminder(msg):
+    chat_id = msg.chat.id
+    users[chat_id] += [Reminder()]
+    enter_text(msg)
 
 
-@bot.message_handler(func=lambda message: message.text == 'Создать напоминание')
-def create_reminder(message):
-    chat_id = message.chat.id
-    users[chat_id] += [Reminder()]  # добавляем его в список напоминаний пользователя
-    msg = bot.send_message(chat_id, 'Введите текст напоминания:')
-    bot.register_next_step_handler(msg, process_text_step)  # переходим к следующему шагу
+def enter_text(msg, rem_idx=-1):
+    msg = bot.send_message(msg.chat.id, 'Enter text:')
+    bot.register_next_step_handler(msg, process_text_step, rem_idx)
 
 
-def process_text_step(message, reminder_index=-1):
-    chat_id = message.chat.id
-    users[chat_id][reminder_index].text = message.text
+def process_text_step(msg, rem_idx=-1):
+    users[msg.chat.id][rem_idx].text = msg.text
 
-    if reminder_index != -1:
-        bot.send_message(chat_id, 'Текст изменен!')
-        start(message)  # выводим клавиатуру с выбором действий
-        return
-
-    bot.send_message(chat_id, 'Введите дату и время напоминания\nФормат: ГГГГ-ММ-ДД ЧЧ:ММ\nПример:')
-    next_date = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime('%Y-%m-%d %H:%M')
-    msg = bot.send_message(chat_id, next_date)
-    bot.register_next_step_handler(msg, process_date_step)
+    if rem_idx == -1:
+        enter_date(msg, rem_idx)
+    else:
+        start(msg)
 
 
-def process_date_step(message, reminder_index=-1):
-    chat_id = message.chat.id
+def enter_date(msg, rem_idx=-1):
+    chat_id = msg.chat.id
+    bot.send_message(chat_id, 'Enter the date and time of the reminder\nFormat: YYYY-MM-DD HH:MM\nExample:')
+    msg = bot.send_message(chat_id, (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d %H:%M'))
+    bot.register_next_step_handler(msg, process_date_step, rem_idx)
+
+
+def process_date_step(msg, rem_idx=-1):
     try:
-        date_str = message.text  # получаем дату от пользователя
-        date = datetime.datetime.strptime(date_str, '%Y-%m-%d %H:%M')  # преобразуем строку в объект datetime
-        users[chat_id][reminder_index].date = date  # сохраняем дату в напоминании
+        users[msg.chat.id][rem_idx].date = datetime.strptime(msg.text, '%Y-%m-%d %H:%M')
 
-        if reminder_index != -1:
-            bot.send_message(chat_id, 'Дата изменена!')
-            start(message)  # выводим клавиатуру с выбором действий
-            return
-
-        markup = types.ReplyKeyboardMarkup(row_width=2)  # создаем клавиатуру с выбором действий
-        markup.add(
-            types.KeyboardButton('Да'),
-            types.KeyboardButton('Нет')
-        )
-        msg = bot.send_message(chat_id, 'Хотите прикрепить файлы к напоминанию?', reply_markup=markup)
-        bot.register_next_step_handler(msg, process_files_step)  # переходим к следующему шагу
+        if rem_idx == -1:
+            want_to(msg, 'Want to attach files to a reminder?', process_files_step)
+        else:
+            start(msg)
 
     except ValueError:
-        msg = bot.reply_to(message, 'Неверный формат даты. Попробуйте еще раз.')
-        bot.register_next_step_handler(msg, process_date_step)  # повторяем шаг
+        msg = bot.reply_to(msg, 'Invalid date format. Try again')
+        bot.register_next_step_handler(msg, process_date_step)
 
 
-def process_files_step(message):
-    chat_id = message.chat.id
-    if message.text == 'Да':
-        msg = bot.send_message(chat_id, 'Прикрепите файлы или нажмите /cancel для отмены:')
-        bot.register_next_step_handler(msg, process_add_files_step, -1)
+def want_to(msg, text, next_step):
+    markup = types.ReplyKeyboardMarkup(row_width=2)
+    markup.add(
+        types.KeyboardButton('Yes'),
+        types.KeyboardButton('No')
+    )
+    msg = bot.send_message(msg.chat.id, text, reply_markup=markup)
+    bot.register_next_step_handler(msg, next_step)
+
+
+def process_files_step(msg):
+    if msg.text == 'Yes':
+        send_files(msg)
     else:
-        bot.send_message(chat_id, 'Напоминание создано!')
-        start(message)
+        want_to(msg, 'Do you want the reminder to repeat?', process_repeat)
 
 
-def process_add_files_step(message, reminder_index=-1):
-    chat_id = message.chat.id
+def send_files(msg, rem_idx=-1):
+    msg = bot.send_message(msg.chat.id, 'Attach files or press /cancel:')
+    bot.register_next_step_handler(msg, process_add_files_step, rem_idx)
 
-    if message.content_type == 'document':
-        file_id = message.document.file_id
-        file_name = message.document.file_name
 
-        reminder = users[chat_id][reminder_index]
-        reminder.files += [(file_name, file_id)]
+def process_add_files_step(msg, rem_idx=-1):
+    chat_id = msg.chat.id
 
-        bot.send_message(chat_id, f'Файл {file_name} добавлен!')
-        msg = bot.send_message(chat_id, 'Прикрепите еще файлы или нажмите /cancel для отмены:')
-        bot.register_next_step_handler(msg, process_add_files_step, reminder_index)
+    if msg.content_type == 'document':
+        file_name = msg.document.file_name
 
-    elif message.content_type != 'text':
-        msg = bot.send_message(chat_id, 'К сожалению, данный формат файлов пока не поддерживается\n'
-                                        'Попробуйте отправить документ через раздел \"Файлы\" '
-                                        'или нажмите /cancel для отмены')
+        reminder = users[chat_id][rem_idx]
+        reminder.files += [(file_name, msg.document.file_id)]
+
+        bot.send_message(chat_id, f'File {file_name} attached!')
+        msg = bot.send_message(chat_id, 'Attach more files or press /cancel:')
+        bot.register_next_step_handler(msg, process_add_files_step, rem_idx)
+
+    elif msg.content_type != 'text':
+        msg = bot.send_message(chat_id, 'File format is not supported yet\n'
+                                        'Try sending through the \"Files\" section or press /cancel')
         bot.register_next_step_handler(msg, process_add_files_step)
 
-    elif reminder_index == -1:
-        bot.send_message(chat_id, 'Напоминание создано!')
-        start(message)
+    elif rem_idx == -1:
+        want_to(msg, 'Do you want the reminder to repeat?', process_repeat)
 
     else:
-        start(message)
+        reminder_updated(msg)
 
 
-def reminder_created(message):
-    chat_id = message.chat.id
-    bot.send_message(chat_id, 'Напоминание создано!')
-    start(message)  # выводим клавиатуру с выбором действий
+def process_repeat(msg, rem_idx=-1):
+    if msg.text == 'Yes':
+        enter_repeat_period(msg, rem_idx)
+    else:
+        reminder_created(msg)
 
 
-@bot.message_handler(func=lambda message: message.text == 'Текущие дела')
-def current_reminders(message):
-    chat_id = message.chat.id
+def enter_repeat_period(msg, rem_idx=-1):
+    markup = types.ReplyKeyboardMarkup(row_width=2)
+    markup.add(
+        types.KeyboardButton('Day'),
+        types.KeyboardButton('Week'),
+        types.KeyboardButton('Month'),
+        types.KeyboardButton('Year')
+    )
+    msg = bot.send_message(msg.chat.id, 'Choose a reminder repeat period:', reply_markup=markup)
+    bot.register_next_step_handler(msg, process_repeat_step, rem_idx)
+
+
+def process_repeat_step(msg, rem_idx=-1):
+    if msg.text in freqs:
+        users[msg.chat.id][rem_idx].delta = freqs[msg.text]
+
+    if rem_idx != -1:
+        reminder_created(msg)
+    else:
+        start(msg)
+
+
+def reminder_created(msg):
+    bot.send_message(msg.chat.id, 'Reminder created!')
+    start(msg)
+
+
+@bot.message_handler(func=lambda msg: msg.text == 'Current deals')
+def current_reminders(msg):
+    chat_id = msg.chat.id
     reminders = users.get(chat_id, [])  # получаем список напоминаний пользователя
 
     if not reminders:
-        bot.send_message(chat_id, 'У вас нет текущих напоминаний.')
-        start(message)
+        bot.send_message(chat_id, 'You have no current reminders.')
+        start(msg)
         return
 
-    for i, reminder in enumerate(reminders):
-        if reminder.done:
+    for i, rem in enumerate(reminders):
+        if rem.done:
             continue
 
         markup = types.InlineKeyboardMarkup()  # создаем клавиатуру с выбором действий
         markup.add(
-            types.InlineKeyboardButton('Редактировать', callback_data=f'edit_{i}'),
-            types.InlineKeyboardButton('Удалить', callback_data=f'delete_{i}'),
-            types.InlineKeyboardButton('Выполнено', callback_data=f'done_{i}')
+            types.InlineKeyboardButton('Edit', callback_data=f'edit_{i}'),
+            types.InlineKeyboardButton('Done', callback_data=f'done_{i}'),
+            types.InlineKeyboardButton('Delete', callback_data=f'delete_{i}')
         )
+        if rem.delta:
+            markup.add(types.InlineKeyboardButton('Delete next only', callback_data=f'delete_next_{i}'))
 
-        text = f'{i + 1}. {reminder.text} ({reminder.date.strftime("%Y-%m-%d %H:%M")})'
-        bot.send_message(chat_id, text, reply_markup=markup)
+        bot.send_message(chat_id, rem.to_string(), reply_markup=markup)
+        for _, file_id in rem.files:
+            bot.send_document(chat_id, file_id)
 
-        if reminder.files:
-            bot.send_message(chat_id, 'Файлы:')
-            for file_name, file_id in reminder.files:
-                bot.send_document(chat_id, file_id, caption=file_name)
-        # bot.send_message(chat_id, 'Выберите действие:', reply_markup=markup)
-
-    start(message)
+    start(msg)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('edit_'))
 def edit_reminder(call):
     chat_id = call.message.chat.id
-    reminder_index = int(call.data.split('_')[1])  # получаем индекс напоминания из данных callback
-    reminder = users[chat_id][reminder_index]  # получаем напоминание по индексу
-    bot.send_message(chat_id, f'Текст: {reminder.text}')
-    bot.send_message(chat_id, f'Дата: {reminder.date.strftime("%Y-%m-%d %H:%M")}')
-    if reminder.files:
-        bot.send_message(chat_id, 'Файлы:')
-        for file_name, file_id in reminder.files:
-            bot.send_document(chat_id, file_id, caption=file_name)
-    else:
-        bot.send_message(chat_id, 'Файлы отсутствуют')
-    markup = types.ReplyKeyboardMarkup(row_width=2)  # создаем клавиатуру с выбором действий
+    rem_idx = int(call.data.split('_')[1])
+    rem = users[chat_id][rem_idx]
+
+    bot.send_message(chat_id, rem.to_string())
+    for _, file_id in rem.files:
+        bot.send_document(chat_id, file_id)
+
+    markup = types.ReplyKeyboardMarkup(row_width=2)
     markup.add(
-        types.KeyboardButton('Изменить текст'),
-        types.KeyboardButton('Изменить дату'),
-        types.KeyboardButton('Изменить файлы')
+        types.KeyboardButton('Change text'),
+        types.KeyboardButton('Change date'),
+        types.KeyboardButton('Change files'),
+        types.KeyboardButton('Change repeat period')
     )
-    msg = bot.send_message(chat_id, 'Выберите действие:', reply_markup=markup)
-    bot.register_next_step_handler(msg, process_edit_step, reminder_index)  # переходим к следующему шагу
+    msg = bot.send_message(chat_id, 'Choose an action:', reply_markup=markup)
+    bot.register_next_step_handler(msg, process_edit_step, rem_idx)
 
 
-def process_edit_step(message, reminder_index):
-    chat_id = message.chat.id
-    reminder = users[chat_id][reminder_index]  # получаем напоминание по индексу
-    if message.text == 'Изменить текст':
-        msg = bot.send_message(chat_id, 'Введите новый текст:')
-        bot.register_next_step_handler(msg, process_text_step, reminder_index)  # переходим к следующему шагу
-    elif message.text == 'Изменить дату':
-        bot.send_message(chat_id, 'Введите новую дату и время напоминания\nФормат: ГГГГ-ММ-ДД ЧЧ:ММ\nПример:')
-        next_date = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime('%Y-%m-%d %H:%M')
-        msg = bot.send_message(chat_id, next_date)
-        bot.register_next_step_handler(msg, process_date_step, reminder_index)  # переходим к следующему шагу
-    elif message.text == 'Изменить файлы':
-        if reminder.files:
-            for file_name, file_id in reminder.files:
-                markup = types.InlineKeyboardMarkup()  # создаем клавиатуру с выбором действий
-                markup.add(
-                    types.InlineKeyboardButton('Удалить', callback_data=f'delete_file_{reminder_index}_{file_name}')
-                )
-                bot.send_document(chat_id, file_id, caption=file_name, reply_markup=markup)
-        msg = bot.send_message(chat_id, 'Прикрепите новые файлы или нажмите /cancel для отмены:')
-        bot.register_next_step_handler(msg, process_files_step, reminder_index)  # переходим к следующему шагу
+def process_edit_step(msg, rem_idx):
+    chat_id = msg.chat.id
+    rem = users[chat_id][rem_idx]  # получаем напоминание по индексу
+    if msg.text == 'Change text':
+        enter_text(msg, rem_idx)
+    elif msg.text == 'Change date':
+        enter_date(msg, rem_idx)
+    elif msg.text == 'Change files':
+        for file_name, file_id in rem.files:
+            markup = types.InlineKeyboardMarkup()  # создаем клавиатуру с выбором действий
+            markup.add(
+                types.InlineKeyboardButton('Delete', callback_data=f'delete_file_{rem_idx}_{file_name}')
+            )
+            bot.send_document(chat_id, file_id, reply_markup=markup)
+        send_files(msg, rem_idx)
+    elif msg.text == 'Change repeat period':
+        enter_repeat_period(msg, rem_idx)
+
+
+def reminder_updated(msg):
+    bot.send_message(msg.chat.id, 'Reminder updated!')
+    start(msg)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('delete_file_'))
 def delete_file(call):
     data = call.data.split('_')
-    reminder = users[call.message.chat.id][int(data[2])]
-    reminder.files = [(name, file_id) for name, file_id in reminder.files if name != data[3]]
-    bot.answer_callback_query(call.id, text=f'Файл {data[3]} удален!')
+    rem = users[call.message.chat.id][int(data[2])]
+    rem.files = [(name, file_id) for name, file_id in rem.files if name != data[3]]
+    bot.answer_callback_query(call.id, text=f'File {data[3]} deleted!')
+    start(call.message)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_next_'))
+def delete_one_reminder(call):
+    rem = users[call.message.chat.id][int(call.data.split('_')[2])]
+    rem.date += rem.delta
+    bot.answer_callback_query(call.id, text='Next reminder deleted!')
     start(call.message)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('delete_'))
 def delete_reminder(call):
     users[call.message.chat.id].pop(int(call.data.split('_')[1]))
-    bot.answer_callback_query(call.id, text='Напоминание удалено!')
+    bot.answer_callback_query(call.id, text='Reminder deleted!')
     start(call.message)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('done_'))
 def done_reminder(call):
-    reminder = users[call.message.chat.id][int(call.data.split('_')[1])]
-    reminder.done = True
-    bot.answer_callback_query(call.id, text='Напоминание выполнено!')
+    rem = users[call.message.chat.id][int(call.data.split('_')[1])]
+    rem.done = True
+    bot.answer_callback_query(call.id, text='Reminder done!')
     start(call.message)
 
 
-@bot.message_handler(func=lambda message: message.text == 'Выполненные дела')
-def done_reminders(message):
-    chat_id = message.chat.id
-    reminders = users.get(chat_id, [])  # получаем список напоминаний пользователя
-    if not reminders:
-        bot.send_message(chat_id, 'У вас нет выполненных напоминаний.')
-        start(message)
+@bot.message_handler(func=lambda msg: msg.text == 'Completed deals')
+def done_reminders(msg):
+    chat_id = msg.chat.id
+    rems = users.get(chat_id, [])  # получаем список напоминаний пользователя
+    if not rems or not list(filter(lambda r: r.done, rems)):
+        bot.send_message(chat_id, 'You have no completed reminders.')
+        start(msg)
         return
 
-    for i, reminder in enumerate(reminders):
-        if reminder.done:  # выводим только выполненные напоминания
-            text = f'{i + 1}. {reminder.text} ({reminder.date.strftime("%Y-%m-%d %H:%M")})'
-            bot.send_message(chat_id, text)
+    for i, rem in enumerate(rems):
+        if rem.done:  # выводим только выполненные напоминания
             markup = types.InlineKeyboardMarkup()  # создаем клавиатуру с выбором действий
-            markup.add(types.InlineKeyboardButton('Вернуть в текущие', callback_data=f'undone_{i}'))
-            bot.send_message(chat_id, 'Выберите действие:', reply_markup=markup)
+            markup.add(types.InlineKeyboardButton('Return to current', callback_data=f'undone_{i}'))
+            bot.send_message(chat_id, rem.to_string(), reply_markup=markup)
 
-    start(message)
+    start(msg)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('undone_'))
 def undone_reminder(call):
-    reminder = users[call.message.chat.id][int(call.data.split('_')[1])]
-    reminder.done = False
-    bot.answer_callback_query(call.id, text='Напоминание возвращено в текущие!')
+    users[call.message.chat.id][int(call.data.split('_')[1])].done = False
+    bot.answer_callback_query(call.id, text='Reminder returned to current!')
     start(call.message)
 
 
 def check_reminders():
     while True:
-        current_time = datetime.datetime.now()
-        for chat_id, reminders in users.items():
-            for reminder in reminders:
-                if not reminder.done and reminder.date is not None and reminder.date <= current_time:
-                    bot.send_message(chat_id, f'Напоминание: {reminder.text}')
-                    if reminder.files:
-                        bot.send_message(chat_id, 'Файлы:')
-                        for file_name, file_id in reminder.files:
-                            bot.send_document(chat_id, file_id, caption=file_name)
+        for chat_id, rems in users.items():
+            for i, rem in enumerate(rems):
+                if not rem.done and rem.date is not None and rem.date <= datetime.now():
+                    markup = types.InlineKeyboardMarkup()
+                    markup.add(
+                        types.InlineKeyboardButton('Edit', callback_data=f'edit_{i}'),
+                        types.InlineKeyboardButton('Done', callback_data=f'done_{i}')
+                    )
 
-                    reminder.done = True
-        time.sleep(10)  # проверяем напоминания каждую минуту
+                    bot.send_message(chat_id, f'Reminder: {rem.text}', reply_markup=markup)
+                    for _, file_id in rem.files:
+                        bot.send_document(chat_id, file_id)
+
+                    if rem.delta:
+                        users[chat_id] += [copy.deepcopy(rem)]
+                        users[chat_id][-1].date += rem.delta
+                        rem.date += rem.delta
+        time.sleep(10)
 
 
 if __name__ == '__main__':
