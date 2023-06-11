@@ -1,17 +1,28 @@
 import copy
+import os
 
 import telebot
 from telebot import types
+
 from datetime import datetime, timedelta
-import threading
-import time
 from dateutil.relativedelta import relativedelta
 
+import threading
+import time
+
+import pickle
+import asyncio
+
+import gdrive_sync
 from config import bot_token
 
 bot = telebot.TeleBot(bot_token)
 
 users = {}  # словарь для хранения данных пользователей
+
+service = None
+folder_id = None
+folder_path = 'users'
 
 
 class User:
@@ -27,6 +38,7 @@ class Reminder:
         self.date = None  # дата напоминания
         self.files = None  # список прикрепленных файлов
         self.delta = None  # флаг повторяющегося напоминания
+        self.notified = None
 
     def to_string(self):
         return f'{self.text} ({self.date.strftime("%Y-%m-%d %H:%M")}' + \
@@ -39,6 +51,27 @@ freqs = {
     'Month': relativedelta(months=1),
     'Year': relativedelta(years=1)
 }
+
+
+def init_users():
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+
+    file_list = [file for file in os.listdir(folder_path) if file.endswith('.pkl')]
+
+    for file_name in file_list:
+        file_path = os.path.join(folder_path, file_name)
+
+        with open(file_path, 'rb') as file:
+            users[int(os.path.splitext(file_name)[0])] = pickle.load(file)
+
+
+async def upload_user_data(chat_id):
+    file_name = f'{chat_id}.pkl'
+
+    with open(os.path.join(folder_path, file_name), "wb") as file:
+        pickle.dump(users[chat_id], file)
+    gdrive_sync.upload_file(service, folder_id, folder_path, file_name)
 
 
 def start(msg):
@@ -182,12 +215,14 @@ def process_repeat_step(msg):
 
 def reminder_modified(msg):
     edit_to_curr(msg.chat.id)
+    asyncio.run(upload_user_data(msg.chat.id))
     bot.send_message(msg.chat.id, 'Reminder modified!')
     start(msg)
 
 
 def edit_to_curr(user_id):
     user = users[user_id]
+    user.editable.notified = False
     user.current += [user.editable]
     user.current.sort(key=lambda r: r.date)
     user.editable = None
@@ -226,24 +261,28 @@ def current_reminders(msg):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('edit_'))
 def edit_reminder(call):
-    chat_id = call.message.chat.id
-    user = users[chat_id]
-    rem = user.editable = user.current.pop(int(call.data.split('_')[1]))
+    try:
+        chat_id = call.message.chat.id
 
-    bot.send_message(chat_id, 'Reminder to edit:')
-    bot.send_message(chat_id, rem.to_string())
-    for file in rem.files:
-        bot.send_document(chat_id, file)
+        user = users[chat_id]
+        rem = user.editable = user.current.pop(int(call.data.split('_')[1]))
 
-    markup = types.ReplyKeyboardMarkup(row_width=2)
-    markup.add(
-        types.KeyboardButton('Change text'),
-        types.KeyboardButton('Change date'),
-        types.KeyboardButton('Change files'),
-        types.KeyboardButton('Change repeat period')
-    )
-    msg = bot.send_message(chat_id, 'Choose an action:', reply_markup=markup)
-    bot.register_next_step_handler(msg, process_edit_step)
+        bot.send_message(chat_id, 'Reminder to edit:')
+        bot.send_message(chat_id, rem.to_string())
+        for file in rem.files:
+            bot.send_document(chat_id, file)
+
+        markup = types.ReplyKeyboardMarkup(row_width=2)
+        markup.add(
+            types.KeyboardButton('Change text'),
+            types.KeyboardButton('Change date'),
+            types.KeyboardButton('Change files'),
+            types.KeyboardButton('Change repeat period')
+        )
+        msg = bot.send_message(chat_id, 'Choose an action:', reply_markup=markup)
+        bot.register_next_step_handler(msg, process_edit_step)
+    except IndexError:
+        bot.send_message(call.message.chat.id, 'Error occurred')
 
 
 def process_edit_step(msg):
@@ -265,44 +304,61 @@ def process_edit_step(msg):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('delete_file_'))
 def delete_file(call):
-    data = call.data.split('_')
-    rem = users[call.message.chat.id].editable
-    rem.files = [file for file in rem.files if file != data[2]]
-    bot.answer_callback_query(call.id, text=f'File {data[2]} deleted!')
-    start(call.message)
+    try:
+        data = call.data.split('_')
+        rem = users[call.message.chat.id].editable
+        rem.files = [file for file in rem.files if file != data[2]]
+        asyncio.run(upload_user_data(call.message.chat.id))
+        bot.answer_callback_query(call.id, text=f'File {data[2]} deleted!')
+        start(call.message)
+    except IndexError:
+        bot.send_message(call.message.chat.id, 'Error occurred')
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('delete_next_'))
 def delete_next_reminder(call):
-    user = users[call.message.chat.id]
-    user.editable = user.current.pop(int(call.data.split('_')[2]))
-    user.editable.date += user.editable.delta
-    edit_to_curr(call.message.chat.id)
-    bot.answer_callback_query(call.id, text='Next reminder deleted!')
-    start(call.message)
+    try:
+        user = users[call.message.chat.id]
+        user.editable = user.current.pop(int(call.data.split('_')[2]))
+        user.editable.date += user.editable.delta
+        edit_to_curr(call.message.chat.id)
+        asyncio.run(upload_user_data(call.message.chat.id))
+        bot.answer_callback_query(call.id, text='Next reminder deleted!')
+        start(call.message)
+    except IndexError:
+        bot.send_message(call.message.chat.id, 'Error occurred')
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('delete_'))
 def delete_reminder(call):
-    users[call.message.chat.id].current.pop(int(call.data.split('_')[1]))
-    bot.answer_callback_query(call.id, text='Reminder deleted!')
-    start(call.message)
+    try:
+        users[call.message.chat.id].current.pop(int(call.data.split('_')[1]))
+        asyncio.run(upload_user_data(call.message.chat.id))
+        bot.answer_callback_query(call.id, text='Reminder deleted!')
+        start(call.message)
+    except IndexError:
+        bot.send_message(call.message.chat.id, 'Error occurred')
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('done_'))
 def done_reminder(call):
-    user = users[call.message.chat.id]
-    rem = user.editable = user.current.pop(int(call.data.split('_')[1]))
-    edit_to_done(call.message.chat.id)
-    next_to_curr(call.message.chat.id, rem)
-    bot.answer_callback_query(call.id, text='Reminder done!')
-    start(call.message)
+    try:
+        user = users[call.message.chat.id]
+        rem = user.editable = user.current.pop(int(call.data.split('_')[1]))
+        edit_to_done(call.message.chat.id)
+        if not rem.notified:
+            next_to_curr(call.message.chat.id, rem)
+        asyncio.run(upload_user_data(call.message.chat.id))
+        bot.answer_callback_query(call.id, text='Reminder done!')
+        start(call.message)
+    except IndexError:
+        bot.send_message(call.message.chat.id, 'Error occurred')
 
 
 def next_to_curr(chat_id, rem):
     user = users[chat_id]
     user.editable = copy.deepcopy(rem)
-    user.editable += rem.delta
+    user.editable.date += rem.delta
     edit_to_curr(chat_id)
 
 
@@ -324,27 +380,39 @@ def done_reminders(msg):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('undone_'))
 def undone_reminder(call):
-    user = users[call.message.chat.id]
-    user.editable = user.done.pop(int(call.data.split('_')[1]))
-    edit_to_curr(call.message.chat.id)
-    bot.answer_callback_query(call.id, text='Reminder returned to current!')
-    start(call.message)
+    try:
+        user = users[call.message.chat.id]
+        user.editable = user.done.pop(int(call.data.split('_')[1]))
+        edit_to_curr(call.message.chat.id)
+        asyncio.run(upload_user_data(call.message.chat.id))
+        bot.answer_callback_query(call.id, text='Reminder returned to current!')
+        start(call.message)
+    except IndexError:
+        bot.send_message(call.message.chat.id, 'Error occurred')
 
 
 def check_reminders():
     for chat_id, user in users.items():
         for i, rem in enumerate(user.current):
-            if rem.date == datetime.now().replace(second=0, microsecond=0):
-                markup = types.InlineKeyboardMarkup()
-                markup.add(
-                    types.InlineKeyboardButton('Edit', callback_data=f'edit_{i}'),
-                    types.InlineKeyboardButton('Done', callback_data=f'done_{i}')
-                )
-                bot.send_message(chat_id, f'Reminder: {rem.text}', reply_markup=markup)
-                for file in rem.files:
-                    bot.send_document(chat_id, file)
-                if rem.delta != relativedelta():
-                    next_to_curr(chat_id, rem)
+            if rem.notified or rem.date > datetime.now():
+                continue
+
+            rem.notified = True
+
+            markup = types.InlineKeyboardMarkup()
+            markup.add(
+                types.InlineKeyboardButton('Edit', callback_data=f'edit_{i}'),
+                types.InlineKeyboardButton('Done', callback_data=f'done_{i}')
+            )
+
+            bot.send_message(chat_id, f'Reminder: {rem.text}', reply_markup=markup)
+            for file in rem.files:
+                bot.send_document(chat_id, file)
+
+            if rem.delta != relativedelta():
+                next_to_curr(chat_id, rem)
+
+            asyncio.run(upload_user_data(chat_id))
 
 
 def inf_checker():
@@ -353,7 +421,11 @@ def inf_checker():
         time.sleep(60)
 
 
-
 if __name__ == '__main__':
+    service = gdrive_sync.init()
+    folder_id = gdrive_sync.get_folder_id(service, 'todo_telegram_bot_users')
+    gdrive_sync.download_all_files(service, folder_id, folder_path)
+
+    init_users()
     threading.Thread(target=inf_checker).start()
     bot.polling()  # запускаем бота
