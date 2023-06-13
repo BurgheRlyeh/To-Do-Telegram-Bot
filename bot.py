@@ -13,10 +13,13 @@ import time
 import pickle
 import asyncio
 
+from flask import Flask, request
+
 import gdrive_sync
 from config import bot_token
 
 bot = telebot.TeleBot(bot_token)
+app = Flask(__name__)
 
 users = {}  # словарь для хранения данных пользователей
 
@@ -346,8 +349,8 @@ def done_reminder(call):
         user = users[call.message.chat.id]
         rem = user.editable = user.current.pop(int(call.data.split('_')[1]))
         edit_to_done(call.message.chat.id)
-        if not rem.notified:
-            next_to_curr(call.message.chat.id, rem)
+        # if not rem.notified:
+        #     next_to_curr(call.message.chat.id, rem)
         asyncio.run(upload_user_data(call.message.chat.id))
         bot.answer_callback_query(call.id, text='Reminder done!')
         start(call.message)
@@ -419,6 +422,11 @@ def inf_checker():
     while True:
         check_reminders()
         time.sleep(60)
+
+
+@app.route('/', methods=['GET'])
+def http_checker():
+    check_reminders()
 
 
 if __name__ == '__main__':

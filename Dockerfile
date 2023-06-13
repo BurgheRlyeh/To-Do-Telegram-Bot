@@ -1,15 +1,17 @@
 # Используем официальный образ Python 3
-FROM python:3.8-slim-buster
+FROM python:3.8
 
 # Создаем рабочую директорию
-WORKDIR /app
+WORKDIR /usr/src/app
+
+# Копируем зависимости
+COPY requirements.txt ./
+
+# Устанавливаем зависимости
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Копируем файлы с нашего локального компьютера в Docker контейнер
-COPY bot.py /app
-COPY config.py /app
-
-# Устанавливаем необходимые библиотеки
-RUN pip install telebot
+COPY . .
 
 # Запускаем скрипт
-CMD ["python", "bot.py"]
+CMD ["python", "./bot.py"]
