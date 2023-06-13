@@ -437,5 +437,5 @@ if __name__ == '__main__':
     app.run(port=8000)
 
     init_users()
-    # threading.Thread(target=inf_checker).start()
+    threading.Thread(target=inf_checker).start()
     bot.polling()  # запускаем бота
