@@ -429,13 +429,27 @@ def http_checker():
     check_reminders()
 
 
+def flask_thread():
+    app.run(port=8000)
+
+
+def bot_thread():
+    bot.polling()
+
+
 if __name__ == '__main__':
     service = gdrive_sync.init()
     folder_id = gdrive_sync.get_folder_id(service, 'todo_telegram_bot_users')
     gdrive_sync.download_all_files(service, folder_id, folder_path)
 
-    app.run(port=8000, debug=True)
-
     init_users()
-    threading.Thread(target=inf_checker).start()
-    bot.polling()  # запускаем бота
+
+    t1 = threading.Thread(target=flask_thread)
+    t2 = threading.Thread(target=bot_thread)
+
+    t1.start()
+    t2.start()
+
+    print('asdf')
+
+    # bot.polling()  # запускаем бота
