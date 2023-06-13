@@ -2,7 +2,7 @@
 FROM python:3.8
 
 # Создаем рабочую директорию
-WORKDIR /usr/src/app
+WORKDIR /app
 
 # Копируем зависимости
 COPY requirements.txt ./
