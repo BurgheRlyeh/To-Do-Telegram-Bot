@@ -83,7 +83,7 @@ def start(msg):
         users[chat_id] = User()
     markup = types.ReplyKeyboardMarkup(row_width=1)
     markup.add(
-        types.KeyboardButton('Create a reminder'),
+        types.KeyboardButton('Create a reminder!'),
         types.KeyboardButton('Current deals'),
         types.KeyboardButton('Completed deals')
     )
@@ -453,5 +453,3 @@ if __name__ == '__main__':
     t2.start()
 
     print('asdf')
-
-    # bot.polling()  # запускаем бота
