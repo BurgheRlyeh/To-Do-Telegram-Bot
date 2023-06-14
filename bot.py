@@ -444,6 +444,8 @@ if __name__ == '__main__':
 
     init_users()
 
+    threading.Thread(target=inf_checker).start()
+
     t1 = threading.Thread(target=flask_thread)
     t2 = threading.Thread(target=bot_thread)
 
