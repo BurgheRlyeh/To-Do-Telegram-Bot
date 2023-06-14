@@ -89,3 +89,10 @@ def upload_file(service, folder_id, file_path, file_name):
             media_body=MediaFileUpload(os.path.join(file_path, file_name), mimetype='application/octet-stream'),
             fields='id'
         ).execute()
+
+
+def upload_all_files(service, gdrive_folder_id, local_folder_path):
+    for local_file_name in os.listdir(local_folder_path):
+        local_file_path = os.path.join(local_folder_path, local_file_name)
+        if os.path.isfile(local_file_path):
+            upload_file(service, gdrive_folder_id, local_folder_path, local_file_name)
